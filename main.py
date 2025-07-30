@@ -4,7 +4,7 @@ import pandas as pd
 from flask import Flask
 
 # ——— Telegram Config ———
-BOT_TOKEN = "7964796555:AAGt4OdqCaui7HtJBD9QFGz2P8rk3CSMIZ4"
+BOT_TOKEN = "7964796555:AAHSyzzpEajNPBTK1WNFWITxaW38oeJCkiY"
 CHAT_ID   = "-1002525487392"
 TELEGRAM_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
