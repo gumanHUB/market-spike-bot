@@ -267,10 +267,6 @@ def run_market_scanner():
     logger.info("Market scanner started")
     bot_status["running"] = True
     
-    # Send startup notification
-    if bot_status["telegram_enabled"]:
-        send_telegram_alert("🚀 Market scanner started successfully!")
-    
     scan_count = 0
     
     while bot_status["running"]:
@@ -306,14 +302,7 @@ def run_market_scanner():
             
             logger.info(f"Scan #{scan_count} completed, analyzed {len(results)} symbols")
             
-            # Send periodic status update (every 10 scans during market hours)
-            if scan_count % 10 == 0 and is_market_open() and bot_status["telegram_enabled"]:
-                status_msg = (
-                    f"📊 Scan #{scan_count} completed\n"
-                    f"⏰ Time: {current_time.strftime('%H:%M:%S')}\n"
-                    f"📈 Symbols analyzed: {len(results)}"
-                )
-                send_telegram_alert(f"🤖 *Bot Status Update*\n{status_msg}")
+            # Remove periodic status updates - only send trading alerts
             
         except Exception as e:
             error_msg = f"Error in scanner loop: {e}"
@@ -322,9 +311,7 @@ def run_market_scanner():
             bot_status["errors"] += 1
             bot_status["last_error"] = error_msg
             
-            # Send error alert for critical errors
-            if bot_status["telegram_enabled"]:
-                send_telegram_alert(f"❌ *Bot Error*\nScanner error on scan #{scan_count}: {str(e)[:100]}")
+            # Log errors but don't send Telegram alerts for system errors
         
         # Wait for next scan
         time.sleep(SCAN_INTERVAL)
@@ -453,8 +440,6 @@ def shutdown_handler():
     global bot_status
     logger.info("Shutting down market scanner...")
     bot_status["running"] = False
-    if bot_status["telegram_enabled"]:
-        send_telegram_alert("🛑 Market scanner stopped")
 if __name__ == "__main__":
     # Log startup information
     logger.info("Starting Market Spike Bot...")
@@ -475,7 +460,6 @@ if __name__ == "__main__":
         shutdown_handler()
     except Exception as e:
         logger.error(f"Flask server error: {e}")
-        if bot_status["telegram_enabled"]:
-            send_telegram_alert(f"❌ Flask server crashed: {str(e)}")
+        pass  # Don't send system error alerts
     finally:
         shutdown_handler()
