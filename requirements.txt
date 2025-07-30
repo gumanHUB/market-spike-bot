@@ -1,4 +1,5 @@
-yfinance
-pandas
 flask
+pandas
+yfinance
+python-dotenv
 requests
