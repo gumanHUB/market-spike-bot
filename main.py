@@ -1,97 +1,49 @@
-import os
-import time
-import threading
-import requests
-import yfinance as yf
-import pandas as pd
-from dotenv import load_dotenv
+import os, time, threading, requests, yfinance as yf, pandas as pd
 from flask import Flask
 
-# ——— Load Secrets ———
-load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID   = os.getenv("CHAT_ID")
+# Load from Render environment variables
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CHAT_ID   = os.environ.get("CHAT_ID")
 TELEGRAM_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-# ——— Stock List (Test) ———
 SYMBOLS = ["RELIANCE.NS", "TCS.NS"]
 
-# ——— Indicators ———
-def sma(series, window):
-    return series.rolling(window).mean()
-
-def rsi(series, window=14):
-    delta = series.diff()
-    up = delta.clip(lower=0)
-    down = -delta.clip(upper=0)
-    ema_up = up.ewm(span=window, adjust=False).mean()
-    ema_down = down.ewm(span=window, adjust=False).mean()
-    rs = ema_up / ema_down
-    return 100 - (100 / (1 + rs))
-
-def macd(series, fast=12, slow=26, signal=9):
-    exp1 = series.ewm(span=fast, adjust=False).mean()
-    exp2 = series.ewm(span=slow, adjust=False).mean()
-    macd_line = exp1 - exp2
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    hist = macd_line - signal_line
-    return macd_line, signal_line, hist
-
-# ——— Send Telegram Alert ———
-def send_alert(message):
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
+def send_alert(msg):
     try:
-        res = requests.post(TELEGRAM_URL, data=payload)
-        print("Alert sent:", res.status_code)
+        requests.post(TELEGRAM_URL, data={"chat_id": CHAT_ID, "text": msg})
     except Exception as e:
-        print("Telegram Error:", e)
+        print("Telegram error:", e)
 
-# ——— Analyze ———
 def analyze(symbol):
-    print(f"Checking {symbol}...")
-    df = yf.download(symbol, period="15d", interval="30m", progress=False)
-
-    if df.empty or len(df) < 50:
-        print(f"[{symbol}] Insufficient data")
+    df = yf.download(symbol, period="7d", interval="30m", progress=False)
+    if df.empty or len(df) < 20:
+        print(f"[{symbol}] Not enough data")
         return
 
-    close = df["Close"]
-    df["SMA20"] = sma(close, 20)
-    df["RSI14"] = rsi(close, 14)
-    macd_line, sig_line, hist = macd(close)
-    df["MACD"], df["SIGNAL"], df["HIST"] = macd_line, sig_line, hist
-    df.dropna(inplace=True)
+    price = df["Close"].iloc[-1]
+    sma = df["Close"].rolling(5).mean().iloc[-1]
 
-    last = df.iloc[-1]
-    price = last["Close"]
-    rsi_val = last["RSI14"]
+    print(f"{symbol} | Price: {price:.2f} | SMA: {sma:.2f}")
 
-    # 💡 For testing: Alert if RSI is between 40–60 (neutral zone)
-    if 40 < rsi_val < 60:
-        send_alert(f"🔔 *Test Alert*: {symbol}\nPrice: ₹{price:.2f}\nRSI: {rsi_val:.2f}")
-    else:
-        print(f"[{symbol}] No signal yet")
+    if price > sma:
+        send_alert(f"📈 Test Spike Alert for {symbol}\nPrice above short SMA.")
+    elif price < sma:
+        send_alert(f"📉 Test Drop Alert for {symbol}\nPrice below short SMA.")
 
-# ——— Bot Loop ———
 def run_bot():
-    print("Bot starting — testing alerts every 1 minute…")
+    print("Test Bot running every 1 min...")
     while True:
         for symbol in SYMBOLS:
             try:
                 analyze(symbol)
             except Exception as e:
-                print(f"{symbol} error: {e}")
-        time.sleep(60)  # test faster
+                print(f"{symbol} Error:", e)
+        time.sleep(60)
 
-# ——— Web Server to keep alive ———
 app = Flask(__name__)
 @app.route('/')
 def home():
-    return "Bot is alive"
+    return "Test bot is alive."
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
