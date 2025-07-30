@@ -1,3 +1,7 @@
-flask
-yfinance
+Flask
 requests
+yfinance
+pandas
+numpy
+pytz
+python-dotenv
