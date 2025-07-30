@@ -4,128 +4,478 @@ import threading
 import requests
 import yfinance as yf
 import pandas as pd
-from flask import Flask
-
-# ——— Load Telegram credentials from Render environment ———
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID   = os.getenv("CHAT_ID")
-TELEGRAM_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-
-# ——— Stocks to Monitor ———
-SYMBOLS = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS"]
-
-# ——— Technical Indicator Functions ———
-def sma(series, window): 
-    return series.rolling(window).mean()
-
-def rsi(series, window=14):
-    delta = series.diff()
-    gain  = delta.clip(lower=0)
-    loss  = -delta.clip(upper=0)
-    avg_gain = gain.ewm(com=window-1, adjust=False).mean()
-    avg_loss = loss.ewm(com=window-1, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-def macd(series):
-    exp1 = series.ewm(span=12, adjust=False).mean()
-    exp2 = series.ewm(span=26, adjust=False).mean()
-    macd_line = exp1 - exp2
-    signal_line = macd_line.ewm(span=9, adjust=False).mean()
-    hist = macd_line - signal_line
-    return macd_line, signal_line, hist
-
-# ——— Send to Telegram ———
-def send_alert(text):
-    try:
-        resp = requests.post(TELEGRAM_URL, data={
-            "chat_id": CHAT_ID,
-            "text": text,
-            "parse_mode": "Markdown"
-        }, timeout=10)
-        if resp.status_code != 200:
-            print("Telegram Error:", resp.status_code, resp.text)
-    except Exception as e:
-        print("Telegram exception:", e)
-
-# ——— Analyze one symbol ———
-def analyze(symbol):
-    df = yf.download(symbol, period="7d", interval="30m", progress=False)
-    if df.empty or len(df) < 50:
-        print(f"[{symbol}] Not enough data.")
-        return
-
-    # Calculate indicators
-    df["SMA20"] = sma(df["Close"], 20)
-    df["RSI14"] = rsi(df["Close"], 14)
-    macd_line, sig_line, hist = macd(df["Close"])
-    df["MACD"], df["SIGNAL"], df["HIST"] = macd_line, sig_line, hist
-    df["VOL_AVG"] = df["Volume"].rolling(20).mean()
-
-    df.dropna(inplace=True)
-    last = df.iloc[-1]
-
-    price   = last.Close
-    sma20   = last.SMA20
-    rsi14   = last.RSI14
-    macd_v  = last.MACD
-    sig_v   = last.SIGNAL
-    vol     = last.Volume
-    vol_avg = last.VOL_AVG
-
-    print(f"[{symbol}] Price={price:.2f}, RSI={rsi14:.1f}, MACD={macd_v:.2f}, Vol={vol}")
-
-    # — High‑Accuracy: strong breakout with volume confirmation —
-    if price > sma20 and rsi14 < 30 and macd_v > sig_v and vol > 1.5 * vol_avg:
-        send_alert(
-            f"📈 *HIGH Spike Detected* — {symbol}\n"
-            f"Price: ₹{price:.2f}\n"
-            f"RSI14: {rsi14:.1f} (<30)\n"
-            f"MACD↑ & Volume Spike"
-        )
-    elif price < sma20 and rsi14 > 70 and macd_v < sig_v and vol > 1.5 * vol_avg:
-        send_alert(
-            f"📉 *HIGH Fall Detected* — {symbol}\n"
-            f"Price: ₹{price:.2f}\n"
-            f"RSI14: {rsi14:.1f} (>70)\n"
-            f"MACD↓ & Volume Spike"
-        )
-
-    # — Mild‑Accuracy: trend/momentum signals without volume —
-    elif price > sma20 and rsi14 < 40 and macd_v > sig_v:
-        send_alert(
-            f"⚠️ *Mild Bullish Signal* — {symbol}\n"
-            f"Price: ₹{price:.2f}\n"
-            f"RSI14: {rsi14:.1f}\n"
-            f"MACD↑"
-        )
-    elif price < sma20 and rsi14 > 60 and macd_v < sig_v:
-        send_alert(
-            f"⚠️ *Mild Bearish Signal* — {symbol}\n"
-            f"Price: ₹{price:.2f}\n"
-            f"RSI14: {rsi14:.1f}\n"
-            f"MACD↓"
-        )
-    else:
-        print(f"[{symbol}] No alert.")
-
-# ——— Bot Loop ———
-def run_bot():
-    print("Bot started — scanning every 15 minutes.")
-    while True:
-        for sym in SYMBOLS:
-            try:
-                analyze(sym)
-            except Exception as e:
-                print(sym, "analysis error:", e)
-        time.sleep(900)  # 15 minutes
-
-# ——— Flask Keep‑Alive ———
+import numpy as np
+from datetime import datetime, time as dt_time
+import pytz
+from flask import Flask, jsonify
+# Initialize logger
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
+# Initialize Flask app
 app = Flask(__name__)
+# ——— Configuration ———
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+CHAT_ID = os.getenv("CHAT_ID", "")
+TELEGRAM_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage" if BOT_TOKEN else ""
+# Stocks to monitor
+SYMBOLS = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS"]
+# Market configuration
+IST = pytz.timezone('Asia/Kolkata')
+MARKET_OPEN = dt_time(9, 15)  # 9:15 AM IST
+MARKET_CLOSE = dt_time(15, 30)  # 3:30 PM IST
+SCAN_INTERVAL = 900  # 15 minutes
+# Technical analysis parameters
+SMA_PERIOD = 20
+RSI_PERIOD = 14
+VOLUME_MULTIPLIER = 1.5
+# Global variables for tracking
+bot_status = {
+    "running": False,
+    "last_scan": None,
+    "total_scans": 0,
+    "errors": 0,
+    "last_error": None,
+    "telegram_enabled": bool(BOT_TOKEN and CHAT_ID)
+}
+# ——— Utility Functions ———
+def is_market_open():
+    """Check if Indian stock market is currently open"""
+    now = datetime.now(IST)
+    current_time = now.time()
+    current_day = now.weekday()
+    
+    # Check if it's a weekday (Monday=0, Sunday=6)
+    if current_day >= 5:  # Saturday or Sunday
+        return False
+    
+    # Check if current time is within market hours
+    return MARKET_OPEN <= current_time <= MARKET_CLOSE
+def send_telegram_alert(message):
+    """Send alert message to Telegram"""
+    if not bot_status["telegram_enabled"]:
+        logger.info(f"Telegram disabled - Would send: {message[:50]}...")
+        return True
+    
+    try:
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": message,
+            "parse_mode": "Markdown"
+        }
+        
+        response = requests.post(TELEGRAM_URL, data=payload, timeout=10)
+        
+        if response.status_code == 200:
+            logger.info(f"Alert sent successfully: {message[:50]}...")
+            return True
+        else:
+            logger.error(f"Telegram API error: {response.status_code} - {response.text}")
+            return False
+            
+    except requests.exceptions.Timeout:
+        logger.error("Telegram request timed out")
+        return False
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Telegram request failed: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error sending alert: {e}")
+        return False
+# ——— Technical Analysis Functions ———
+def calculate_sma(series, window):
+    """Calculate Simple Moving Average"""
+    try:
+        return series.rolling(window=window, min_periods=window).mean()
+    except Exception as e:
+        logger.error(f"Error calculating SMA: {e}")
+        return pd.Series(index=series.index, dtype=float)
+def calculate_rsi(series, window=14):
+    """Calculate Relative Strength Index"""
+    try:
+        delta = series.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        
+        avg_gain = gain.ewm(com=window-1, adjust=False).mean()
+        avg_loss = loss.ewm(com=window-1, adjust=False).mean()
+        
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        return rsi
+    except Exception as e:
+        logger.error(f"Error calculating RSI: {e}")
+        return pd.Series(index=series.index, dtype=float)
+def calculate_macd(series, fast=12, slow=26, signal=9):
+    """Calculate MACD (Moving Average Convergence Divergence)"""
+    try:
+        exp1 = series.ewm(span=fast, adjust=False).mean()
+        exp2 = series.ewm(span=slow, adjust=False).mean()
+        macd_line = exp1 - exp2
+        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+        histogram = macd_line - signal_line
+        
+        return macd_line, signal_line, histogram
+    except Exception as e:
+        logger.error(f"Error calculating MACD: {e}")
+        return (pd.Series(index=series.index, dtype=float),
+                pd.Series(index=series.index, dtype=float),
+                pd.Series(index=series.index, dtype=float))
+def analyze_symbol(symbol):
+    """Analyze a single stock symbol for trading signals"""
+    try:
+        logger.info(f"Analyzing {symbol}")
+        
+        # Fetch stock data with explicit auto_adjust=False to suppress warning
+        df = yf.download(
+            symbol, 
+            period="7d", 
+            interval="30m", 
+            progress=False,
+            auto_adjust=False
+        )
+        
+        if df.empty or len(df) < 50:
+            logger.warning(f"[{symbol}] Not enough data")
+            return None
+        
+        # Calculate technical indicators
+        df["SMA20"] = calculate_sma(df["Close"], SMA_PERIOD)
+        df["RSI14"] = calculate_rsi(df["Close"], RSI_PERIOD)
+        
+        macd_line, signal_line, histogram = calculate_macd(df["Close"])
+        df["MACD"] = macd_line
+        df["MACD_Signal"] = signal_line
+        df["MACD_Histogram"] = histogram
+        
+        df["Volume_Avg"] = df["Volume"].rolling(20).mean()
+        
+        # Remove rows with NaN values
+        df = df.dropna()
+        
+        if df.empty:
+            logger.warning(f"[{symbol}] No data after adding indicators")
+            return None
+        
+        # Get latest values and ensure they're Python floats (not pandas Series)
+        latest = df.iloc[-1]
+        
+        price = float(latest["Close"])
+        sma20 = float(latest["SMA20"]) if pd.notna(latest["SMA20"]) else None
+        rsi14 = float(latest["RSI14"]) if pd.notna(latest["RSI14"]) else None
+        macd_val = float(latest["MACD"]) if pd.notna(latest["MACD"]) else None
+        signal_val = float(latest["MACD_Signal"]) if pd.notna(latest["MACD_Signal"]) else None
+        volume = float(latest["Volume"]) if pd.notna(latest["Volume"]) else None
+        volume_avg = float(latest["Volume_Avg"]) if pd.notna(latest["Volume_Avg"]) else None
+        
+        logger.info(
+            f"[{symbol}] Price=₹{price:.2f}, RSI={rsi14:.1f if rsi14 else 'N/A'}, "
+            f"MACD={macd_val:.3f if macd_val else 'N/A'}, "
+            f"Volume={volume:.0f if volume else 'N/A'}"
+        )
+        
+        # Generate signals if we have all required data
+        if all(v is not None for v in [sma20, rsi14, macd_val, signal_val, volume, volume_avg]):
+            signal_type = None
+            volume_spike = volume > (VOLUME_MULTIPLIER * volume_avg) if volume_avg > 0 else False
+            
+            # High accuracy signals - strong breakout with volume confirmation
+            if (price > sma20 and rsi14 < 30 and macd_val > signal_val and volume_spike):
+                signal_type = "HIGH_BULLISH"
+            elif (price < sma20 and rsi14 > 70 and macd_val < signal_val and volume_spike):
+                signal_type = "HIGH_BEARISH"
+            # Mild accuracy signals - trend/momentum without volume requirement
+            elif (price > sma20 and rsi14 < 40 and macd_val > signal_val):
+                signal_type = "MILD_BULLISH"
+            elif (price < sma20 and rsi14 > 60 and macd_val < signal_val):
+                signal_type = "MILD_BEARISH"
+            
+            # Send alerts for detected signals
+            if signal_type:
+                message = format_alert_message(symbol, signal_type, price, rsi14, macd_val, signal_val, volume_spike)
+                if message:
+                    send_telegram_alert(message)
+                    logger.info(f"Alert sent for {symbol}: {signal_type}")
+            else:
+                logger.info(f"[{symbol}] No signal detected")
+        else:
+            logger.warning(f"[{symbol}] Incomplete indicator data")
+        
+        return {
+            "symbol": symbol,
+            "price": price,
+            "sma20": sma20,
+            "rsi14": rsi14,
+            "macd": macd_val,
+            "signal": signal_val,
+            "volume": volume,
+            "volume_avg": volume_avg,
+            "timestamp": datetime.now(IST).isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error analyzing {symbol}: {e}")
+        return None
+def format_alert_message(symbol, signal_type, price, rsi14, macd_val, signal_val, volume_spike=False):
+    """Format alert message based on signal type"""
+    try:
+        base_info = f"Price: ₹{price:.2f}\nRSI14: {rsi14:.1f}"
+        
+        if signal_type == "HIGH_BULLISH":
+            message = (
+                f"📈 *HIGH Spike Detected* — {symbol}\n"
+                f"{base_info} (<30)\n"
+                f"MACD: {macd_val:.3f} > {signal_val:.3f} ↑\n"
+                f"Volume Spike Confirmed ✅"
+            )
+        elif signal_type == "HIGH_BEARISH":
+            message = (
+                f"📉 *HIGH Fall Detected* — {symbol}\n"
+                f"{base_info} (>70)\n"
+                f"MACD: {macd_val:.3f} < {signal_val:.3f} ↓\n"
+                f"Volume Spike Confirmed ✅"
+            )
+        elif signal_type == "MILD_BULLISH":
+            message = (
+                f"⚠️ *Mild Bullish Signal* — {symbol}\n"
+                f"{base_info}\n"
+                f"MACD: {macd_val:.3f} > {signal_val:.3f} ↑"
+            )
+        elif signal_type == "MILD_BEARISH":
+            message = (
+                f"⚠️ *Mild Bearish Signal* — {symbol}\n"
+                f"{base_info}\n"
+                f"MACD: {macd_val:.3f} < {signal_val:.3f} ↓"
+            )
+        else:
+            return None
+        
+        return message
+        
+    except Exception as e:
+        logger.error(f"Error formatting alert message: {e}")
+        return None
+def run_market_scanner():
+    """Main bot loop that scans the market periodically"""
+    global bot_status
+    
+    logger.info("Market scanner started")
+    bot_status["running"] = True
+    
+    # Send startup notification
+    if bot_status["telegram_enabled"]:
+        send_telegram_alert("🚀 Market scanner started successfully!")
+    
+    scan_count = 0
+    
+    while bot_status["running"]:
+        try:
+            scan_count += 1
+            current_time = datetime.now(IST)
+            
+            logger.info(f"Starting scan #{scan_count} at {current_time.strftime('%H:%M:%S')}")
+            
+            # Check if market is open
+            if not is_market_open():
+                logger.info("Market is closed, waiting for next scan")
+                bot_status["last_scan"] = current_time.isoformat()
+                time.sleep(SCAN_INTERVAL)
+                continue
+            
+            # Analyze all symbols
+            results = []
+            for symbol in SYMBOLS:
+                try:
+                    result = analyze_symbol(symbol)
+                    if result:
+                        results.append(result)
+                except Exception as e:
+                    logger.error(f"Error analyzing {symbol}: {e}")
+                    continue
+            
+            # Update status
+            bot_status.update({
+                "last_scan": current_time.isoformat(),
+                "total_scans": scan_count
+            })
+            
+            logger.info(f"Scan #{scan_count} completed, analyzed {len(results)} symbols")
+            
+            # Send periodic status update (every 10 scans during market hours)
+            if scan_count % 10 == 0 and is_market_open() and bot_status["telegram_enabled"]:
+                status_msg = (
+                    f"📊 Scan #{scan_count} completed\n"
+                    f"⏰ Time: {current_time.strftime('%H:%M:%S')}\n"
+                    f"📈 Symbols analyzed: {len(results)}"
+                )
+                send_telegram_alert(f"🤖 *Bot Status Update*\n{status_msg}")
+            
+        except Exception as e:
+            error_msg = f"Error in scanner loop: {e}"
+            logger.error(error_msg)
+            
+            bot_status["errors"] += 1
+            bot_status["last_error"] = error_msg
+            
+            # Send error alert for critical errors
+            if bot_status["telegram_enabled"]:
+                send_telegram_alert(f"❌ *Bot Error*\nScanner error on scan #{scan_count}: {str(e)[:100]}")
+        
+        # Wait for next scan
+        time.sleep(SCAN_INTERVAL)
+# ——— Helper Functions ———
+def get_market_status():
+    """Get current market status"""
+    try:
+        now = datetime.now(IST)
+        is_open = is_market_open()
+        
+        return {
+            "is_open": is_open,
+            "current_time": now.strftime("%Y-%m-%d %H:%M:%S %Z"),
+            "status": "OPEN" if is_open else "CLOSED"
+        }
+    except Exception as e:
+        logger.error(f"Error getting market status: {e}")
+        return {"is_open": False, "status": "ERROR", "current_time": "Unknown"}
+# ——— Flask Routes ———
 @app.route('/')
-def home():
-    return "Bot is alive"
-
+def dashboard():
+    """Main dashboard page"""
+    telegram_status = "enabled" if bot_status["telegram_enabled"] else "disabled (credentials missing)"
+    warning_div = f"<div class='status warning'><strong>⚠️ Telegram:</strong> {telegram_status}</div>" if not bot_status["telegram_enabled"] else ""
+    
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Market Spike Bot</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
+            .container {{ max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+            .status {{ padding: 10px; margin: 10px 0; border-radius: 5px; }}
+            .running {{ background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }}
+            .warning {{ background: #fff3cd; color: #856404; border: 1px solid #ffeaa7; }}
+            .info {{ background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }}
+            h1 {{ color: #333; }}
+            .api-link {{ margin: 10px 0; }}
+            .api-link a {{ color: #007bff; text-decoration: none; }}
+            .api-link a:hover {{ text-decoration: underline; }}
+        </style>
+        <script>
+            setTimeout(() => location.reload(), 30000); // Auto-refresh every 30 seconds
+        </script>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🤖 Market Spike Bot Dashboard</h1>
+            <div class="status running">
+                <strong>✅ Bot Status:</strong> Running
+            </div>
+            {warning_div}
+            <div class="info">
+                <strong>📊 Monitoring:</strong> 5 Indian stocks (RELIANCE, TCS, HDFCBANK, INFY, ICICIBANK)
+            </div>
+            <div class="info">
+                <strong>⏱️ Scan Interval:</strong> 15 minutes
+            </div>
+            <div class="info">
+                <strong>🕐 Market Hours:</strong> 9:15 AM - 3:30 PM IST
+            </div>
+            <div class="info">
+                <strong>📈 Technical Analysis:</strong> SMA(20), RSI(14), MACD
+            </div>
+            <div class="api-link">
+                <strong>📡 API Endpoints:</strong><br>
+                <a href="/status">Bot Status</a> | 
+                <a href="/market">Market Status</a> | 
+                <a href="/health">Health Check</a>
+            </div>
+            <div class="info">
+                <strong>🔄 Auto-refresh:</strong> Page refreshes every 30 seconds
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+@app.route('/status')
+def status():
+    """Return bot status as JSON"""
+    try:
+        market_status = get_market_status()
+        
+        return jsonify({
+            "bot": bot_status,
+            "market": market_status,
+            "symbols": SYMBOLS,
+            "config": {
+                "scan_interval_minutes": SCAN_INTERVAL // 60,
+                "data_period": "7d",
+                "data_interval": "30m",
+                "telegram_enabled": bot_status["telegram_enabled"]
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error getting status: {e}")
+        return jsonify({"error": str(e)}), 500
+@app.route('/market')
+def market():
+    """Return market status"""
+    try:
+        return jsonify(get_market_status())
+    except Exception as e:
+        logger.error(f"Error getting market status: {e}")
+        return jsonify({"error": str(e)}), 500
+@app.route('/health')
+def health():
+    """Health check endpoint"""
+    try:
+        current_time = datetime.now(IST)
+        return jsonify({
+            "status": "healthy",
+            "timestamp": current_time.isoformat(),
+            "bot_running": bot_status["running"],
+            "uptime_scans": bot_status["total_scans"],
+            "telegram_enabled": bot_status["telegram_enabled"]
+        })
+    except Exception as e:
+        logger.error(f"Health check error: {e}")
+        return jsonify({"status": "unhealthy", "error": str(e)}), 500
+def shutdown_handler():
+    """Graceful shutdown handler"""
+    global bot_status
+    logger.info("Shutting down market scanner...")
+    bot_status["running"] = False
+    if bot_status["telegram_enabled"]:
+        send_telegram_alert("🛑 Market scanner stopped")
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
-    app.run(host="0.0.0.0", port=8080)
+    # Log startup information
+    logger.info("Starting Market Spike Bot...")
+    logger.info(f"Telegram enabled: {bot_status['telegram_enabled']}")
+    logger.info(f"Monitoring symbols: {', '.join(SYMBOLS)}")
+    logger.info(f"Scan interval: {SCAN_INTERVAL // 60} minutes")
+    
+    # Start the market scanner in a background thread
+    scanner_thread = threading.Thread(target=run_market_scanner, daemon=True)
+    scanner_thread.start()
+    
+    try:
+        # Start Flask server - Use port from environment variable or default to 5000
+        port = int(os.environ.get('PORT', 5000))
+        logger.info(f"Starting Flask server on port {port}...")
+        app.run(host="0.0.0.0", port=port, debug=False)
+    except KeyboardInterrupt:
+        shutdown_handler()
+    except Exception as e:
+        logger.error(f"Flask server error: {e}")
+        if bot_status["telegram_enabled"]:
+            send_telegram_alert(f"❌ Flask server crashed: {str(e)}")
+    finally:
+        shutdown_handler()
