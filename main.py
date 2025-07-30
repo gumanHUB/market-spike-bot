@@ -23,7 +23,7 @@ def test_price(symbol):
     if df.empty:
         print(f"[{symbol}] No data")
         return
-    price = df["Close"].iloc[-1]
+    price = float(df["Close"].iloc[-1])
     msg = f"🔔 {symbol} Latest Price: ₹{price:.2f}"
     send_alert(msg)
 
