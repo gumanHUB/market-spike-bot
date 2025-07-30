@@ -1,15 +1,18 @@
-import time, threading, requests
+import time, threading, requests, os
 import yfinance as yf
 import pandas as pd
 from flask import Flask
+from dotenv import load_dotenv
 
-# ——— Telegram Config ———
-BOT_TOKEN = "7964796555:AAHSyzzpEajNPBTK1WNFWITxaW38oeJCkiY"
-CHAT_ID   = "-1002525487392"
+load_dotenv()
+
+# ——— Secure Telegram Config ———
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID   = os.getenv("CHAT_ID")
 TELEGRAM_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
 # ——— Stocks to Monitor ———
-SYMBOLS = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "MARUTI.NS", "HINDUNILVR.NS"]
+SYMBOLS = ["RELIANCE.NS","TCS.NS","HDFCBANK.NS","MARUTI.NS","HINDUNILVR.NS"]
 
 # ——— Indicator Functions ———
 def sma(series, window):
@@ -34,18 +37,15 @@ def macd(series, fast=12, slow=26, signal=9):
 # ——— Telegram Alert ———
 def send_alert(msg):
     try:
-        response = requests.post(TELEGRAM_URL, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
-        print("✅ Telegram status:", response.status_code, "| Message:", msg)
+        requests.post(TELEGRAM_URL, data={"chat_id": CHAT_ID, "text": msg, "parse_mode":"Markdown"})
     except Exception as e:
-        print("❌ Telegram error:", e)
+        print("Telegram error:", e)
 
 # ——— Analyze One Stock ———
 def analyze(symbol):
-    print(f"📊 Analyzing {symbol}...")
-    df = yf.download(symbol, period="30d", interval="30m", progress=False)
-
+    df = yf.download(symbol, period="7d", interval="30m", progress=False)
     if df.empty or len(df) < 50:
-        print(f"⚠️ [{symbol}] Not enough data")
+        print(f"[{symbol}] Not enough data")
         return
 
     close = df["Close"]
@@ -59,27 +59,31 @@ def analyze(symbol):
     price, sma20 = last.Close, last.SMA20
     r, m, s = last.RSI14, last.MACD, last.SIGNAL
 
-    # 🔍 Debug print
-    print(f"[{symbol}] Price: {price:.2f}, SMA20: {sma20:.2f}, RSI: {r:.2f}, MACD: {m:.2f}, SIGNAL: {s:.2f}")
+    print(f"[{symbol}] Price: {price:.2f}, SMA: {sma20:.2f}, RSI: {r:.2f}, MACD: {m:.2f}, SIGNAL: {s:.2f}")
 
-    # 🚨 Test alert every time
-    send_alert(f"🚨 *Test Alert*: {symbol}\nPrice: ₹{price:.2f}\nRSI: {r:.1f}\nMACD: {m:.2f} vs {s:.2f}")
+    if price > sma20 and r < 40 and m > s:
+        send_alert(f"📈 *Test Bullish Alert*: {symbol}\nPrice: {price:.2f}\nRSI: {r:.1f}\nMACD ↑")
+    elif price < sma20 and r > 60 and m < s:
+        send_alert(f"📉 *Test Bearish Alert*: {symbol}\nPrice: {price:.2f}\nRSI: {r:.1f}\nMACD ↓")
+    else:
+        print(f"[{symbol}] No signal")
 
-# ——— Bot Loop & Web Server ———
+# ——— Bot Loop ———
 def run_bot():
-    print("🤖 Bot started — scanning every 1 minute for test")
+    print("Bot started — checking every 1 min (TEST MODE)…")
     while True:
         for sym in SYMBOLS:
             try:
                 analyze(sym)
             except Exception as e:
-                print(sym, "💥 error:", e)
+                print(f"{sym} error:", e)
         time.sleep(60)
 
+# ——— Web Server for Render ———
 app = Flask(__name__)
 @app.route('/')
 def home():
-    return "✅ Bot is running"
+    return "Stock Alert Bot Running"
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
