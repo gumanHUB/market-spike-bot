@@ -1,49 +1,51 @@
-import os, time, threading, requests, yfinance as yf, pandas as pd
+import os, time, threading, requests
+import yfinance as yf
 from flask import Flask
 
-# Load from Render environment variables
+# Telegram credentials from Render Environment tab
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHAT_ID   = os.environ.get("CHAT_ID")
+CHAT_ID = os.environ.get("CHAT_ID")
 TELEGRAM_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
+# Stock symbols to monitor
 SYMBOLS = ["RELIANCE.NS", "TCS.NS"]
 
-def send_alert(msg):
+# Send message to Telegram
+def send_telegram_message(message):
     try:
-        requests.post(TELEGRAM_URL, data={"chat_id": CHAT_ID, "text": msg})
+        res = requests.post(TELEGRAM_URL, data={
+            "chat_id": CHAT_ID,
+            "text": message
+        })
+        print("Sent:", message)
     except Exception as e:
         print("Telegram error:", e)
 
+# Simple function to get latest price
 def analyze(symbol):
-    df = yf.download(symbol, period="7d", interval="30m", progress=False)
-    if df.empty or len(df) < 20:
-        print(f"[{symbol}] Not enough data")
-        return
+    try:
+        df = yf.download(symbol, period="1d", interval="1m", progress=False)
+        if df.empty:
+            print(f"[{symbol}] No data")
+            return
+        price = df["Close"].iloc[-1]
+        send_telegram_message(f"🔔 {symbol} Latest Price: ₹{price:.2f}")
+    except Exception as e:
+        print(f"{symbol} error:", e)
 
-    price = df["Close"].iloc[-1]
-    sma = df["Close"].rolling(5).mean().iloc[-1]
-
-    print(f"{symbol} | Price: {price:.2f} | SMA: {sma:.2f}")
-
-    if price > sma:
-        send_alert(f"📈 Test Spike Alert for {symbol}\nPrice above short SMA.")
-    elif price < sma:
-        send_alert(f"📉 Test Drop Alert for {symbol}\nPrice below short SMA.")
-
+# Repeated background job
 def run_bot():
-    print("Test Bot running every 1 min...")
+    print("Test Bot Running…")
     while True:
-        for symbol in SYMBOLS:
-            try:
-                analyze(symbol)
-            except Exception as e:
-                print(f"{symbol} Error:", e)
+        for sym in SYMBOLS:
+            analyze(sym)
         time.sleep(60)
 
+# Keep bot alive on Render
 app = Flask(__name__)
 @app.route('/')
 def home():
-    return "Test bot is alive."
+    return "Simple test bot is running."
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
