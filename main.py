@@ -1,26 +1,29 @@
-import time, threading, requests, os
+import os
+import time
+import threading
+import requests
 import yfinance as yf
 import pandas as pd
-from flask import Flask
 from dotenv import load_dotenv
+from flask import Flask
 
+# ——— Load Secrets ———
 load_dotenv()
-
-# ——— Secure Telegram Config ———
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID   = os.getenv("CHAT_ID")
 TELEGRAM_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-# ——— Stocks to Monitor ———
-SYMBOLS = ["RELIANCE.NS","TCS.NS","HDFCBANK.NS","MARUTI.NS","HINDUNILVR.NS"]
+# ——— Stock List (Test) ———
+SYMBOLS = ["RELIANCE.NS", "TCS.NS"]
 
-# ——— Indicator Functions ———
+# ——— Indicators ———
 def sma(series, window):
     return series.rolling(window).mean()
 
 def rsi(series, window=14):
     delta = series.diff()
-    up, down = delta.clip(lower=0), -delta.clip(upper=0)
+    up = delta.clip(lower=0)
+    down = -delta.clip(upper=0)
     ema_up = up.ewm(span=window, adjust=False).mean()
     ema_down = down.ewm(span=window, adjust=False).mean()
     rs = ema_up / ema_down
@@ -34,18 +37,26 @@ def macd(series, fast=12, slow=26, signal=9):
     hist = macd_line - signal_line
     return macd_line, signal_line, hist
 
-# ——— Telegram Alert ———
-def send_alert(msg):
+# ——— Send Telegram Alert ———
+def send_alert(message):
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
     try:
-        requests.post(TELEGRAM_URL, data={"chat_id": CHAT_ID, "text": msg, "parse_mode":"Markdown"})
+        res = requests.post(TELEGRAM_URL, data=payload)
+        print("Alert sent:", res.status_code)
     except Exception as e:
-        print("Telegram error:", e)
+        print("Telegram Error:", e)
 
-# ——— Analyze One Stock ———
+# ——— Analyze ———
 def analyze(symbol):
-    df = yf.download(symbol, period="7d", interval="30m", progress=False)
+    print(f"Checking {symbol}...")
+    df = yf.download(symbol, period="15d", interval="30m", progress=False)
+
     if df.empty or len(df) < 50:
-        print(f"[{symbol}] Not enough data")
+        print(f"[{symbol}] Insufficient data")
         return
 
     close = df["Close"]
@@ -56,34 +67,31 @@ def analyze(symbol):
     df.dropna(inplace=True)
 
     last = df.iloc[-1]
-    price, sma20 = last.Close, last.SMA20
-    r, m, s = last.RSI14, last.MACD, last.SIGNAL
+    price = last["Close"]
+    rsi_val = last["RSI14"]
 
-    print(f"[{symbol}] Price: {price:.2f}, SMA: {sma20:.2f}, RSI: {r:.2f}, MACD: {m:.2f}, SIGNAL: {s:.2f}")
-
-    if price > sma20 and r < 40 and m > s:
-        send_alert(f"📈 *Test Bullish Alert*: {symbol}\nPrice: {price:.2f}\nRSI: {r:.1f}\nMACD ↑")
-    elif price < sma20 and r > 60 and m < s:
-        send_alert(f"📉 *Test Bearish Alert*: {symbol}\nPrice: {price:.2f}\nRSI: {r:.1f}\nMACD ↓")
+    # 💡 For testing: Alert if RSI is between 40–60 (neutral zone)
+    if 40 < rsi_val < 60:
+        send_alert(f"🔔 *Test Alert*: {symbol}\nPrice: ₹{price:.2f}\nRSI: {rsi_val:.2f}")
     else:
-        print(f"[{symbol}] No signal")
+        print(f"[{symbol}] No signal yet")
 
 # ——— Bot Loop ———
 def run_bot():
-    print("Bot started — checking every 1 min (TEST MODE)…")
+    print("Bot starting — testing alerts every 1 minute…")
     while True:
-        for sym in SYMBOLS:
+        for symbol in SYMBOLS:
             try:
-                analyze(sym)
+                analyze(symbol)
             except Exception as e:
-                print(f"{sym} error:", e)
-        time.sleep(60)
+                print(f"{symbol} error: {e}")
+        time.sleep(60)  # test faster
 
-# ——— Web Server for Render ———
+# ——— Web Server to keep alive ———
 app = Flask(__name__)
 @app.route('/')
 def home():
-    return "Stock Alert Bot Running"
+    return "Bot is alive"
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
