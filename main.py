@@ -47,11 +47,11 @@ def analyze(symbol):
 
     close = df["Close"]
     df["SMA20"] = sma(close, 20)
-df["RSI14"] = rsi(close, 14)
-macd_line, sig_line, hist = macd(close)
-df["MACD"], df["SIGNAL"], df["HIST"] = macd_line, sig_line, hist
+    df["RSI14"] = rsi(close, 14)
+    macd_line, sig_line, hist = macd(close)
+    df["MACD"], df["SIGNAL"], df["HIST"] = macd_line, sig_line, hist
 
-df.dropna(inplace=True) 
+    df.dropna(inplace=True)
 
     last = df.iloc[-1]
     price, sma20 = last.Close, last.SMA20
