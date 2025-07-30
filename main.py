@@ -57,6 +57,9 @@ def analyze(symbol):
     price, sma20 = last.Close, last.SMA20
     r, m, s = last.RSI14, last.MACD, last.SIGNAL
 
+    # ✅ Debug: Show indicator values
+    print(f"[{symbol}] Price: {price:.2f}, SMA20: {sma20:.2f}, RSI14: {r:.2f}, MACD: {m:.2f}, SIGNAL: {s:.2f}")
+
     # — Bullish Signal —
     if price > sma20 and r < 30 and m > s:
         send_alert(f"📈 *Bullish Spike*: {symbol}\nPrice: {price:.2f}\nRSI: {r:.1f} (<30)\nMACD↑")
