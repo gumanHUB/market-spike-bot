@@ -210,8 +210,9 @@ def analyze_symbol(symbol):
         rsi_str = f"{rsi14:.1f}" if rsi14 is not None else "N/A"
         macd_str = f"{macd_val:.3f}" if macd_val is not None else "N/A"
         volume_str = f"{volume:.0f}" if volume is not None else "N/A"
-        
-        logger.info(f"[{symbol}] Price={price_str}, RSI={rsi_str}, MACD={macd_str}, Volume={volume_str}")
+        sma_str = f"₹{sma20:.2f}" if sma20 is not None else "N/A"
+
+        logger.info(f"[{symbol}] Price={price_str}, SMA20={sma_str}, RSI={rsi_str}, MACD={macd_str}, Volume={volume_str}")
         
         # Generate signals if we have all required data
         if all(v is not None for v in [sma20, rsi14, macd_val, signal_val, volume, volume_avg]):
