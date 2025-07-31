@@ -140,6 +140,10 @@ def analyze_symbol(symbol):
             auto_adjust=False
         )
         
+        # Flatten MultiIndex columns if present
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        
         if df.empty or len(df) < 50:
             logger.warning(f"[{symbol}] Not enough data")
             return None
@@ -165,19 +169,49 @@ def analyze_symbol(symbol):
         # Get latest values and ensure they're Python floats (not pandas Series)
         latest = df.iloc[-1]
         
-        price = float(latest["Close"])
-        sma20 = float(latest["SMA20"]) if pd.notna(latest["SMA20"]) else None
-        rsi14 = float(latest["RSI14"]) if pd.notna(latest["RSI14"]) else None
-        macd_val = float(latest["MACD"]) if pd.notna(latest["MACD"]) else None
-        signal_val = float(latest["MACD_Signal"]) if pd.notna(latest["MACD_Signal"]) else None
-        volume = float(latest["Volume"]) if pd.notna(latest["Volume"]) else None
-        volume_avg = float(latest["Volume_Avg"]) if pd.notna(latest["Volume_Avg"]) else None
+        # Extract scalar values safely to avoid pandas boolean ambiguity
+        try:
+            price = float(latest["Close"]) if pd.notna(latest["Close"]) else None
+        except (TypeError, ValueError):
+            price = None
+            
+        try:
+            sma20 = float(latest["SMA20"]) if pd.notna(latest["SMA20"]) else None
+        except (TypeError, ValueError):
+            sma20 = None
+            
+        try:
+            rsi14 = float(latest["RSI14"]) if pd.notna(latest["RSI14"]) else None
+        except (TypeError, ValueError):
+            rsi14 = None
+            
+        try:
+            macd_val = float(latest["MACD"]) if pd.notna(latest["MACD"]) else None
+        except (TypeError, ValueError):
+            macd_val = None
+            
+        try:
+            signal_val = float(latest["MACD_Signal"]) if pd.notna(latest["MACD_Signal"]) else None
+        except (TypeError, ValueError):
+            signal_val = None
+            
+        try:
+            volume = float(latest["Volume"]) if pd.notna(latest["Volume"]) else None
+        except (TypeError, ValueError):
+            volume = None
+            
+        try:
+            volume_avg = float(latest["Volume_Avg"]) if pd.notna(latest["Volume_Avg"]) else None
+        except (TypeError, ValueError):
+            volume_avg = None
         
-        logger.info(
-            f"[{symbol}] Price=₹{price:.2f}, RSI={rsi14:.1f if rsi14 else 'N/A'}, "
-            f"MACD={macd_val:.3f if macd_val else 'N/A'}, "
-            f"Volume={volume:.0f if volume else 'N/A'}"
-        )
+        # Format values safely for logging
+        price_str = f"₹{price:.2f}" if price is not None else "N/A"
+        rsi_str = f"{rsi14:.1f}" if rsi14 is not None else "N/A"
+        macd_str = f"{macd_val:.3f}" if macd_val is not None else "N/A"
+        volume_str = f"{volume:.0f}" if volume is not None else "N/A"
+        
+        logger.info(f"[{symbol}] Price={price_str}, RSI={rsi_str}, MACD={macd_str}, Volume={volume_str}")
         
         # Generate signals if we have all required data
         if all(v is not None for v in [sma20, rsi14, macd_val, signal_val, volume, volume_avg]):
@@ -276,12 +310,7 @@ def run_market_scanner():
             
             logger.info(f"Starting scan #{scan_count} at {current_time.strftime('%H:%M:%S')}")
             
-            # Check if market is open
-            if not is_market_open():
-                logger.info("Market is closed, waiting for next scan")
-                bot_status["last_scan"] = current_time.isoformat()
-                time.sleep(SCAN_INTERVAL)
-                continue
+            # Bot now runs 24/7 - removed market hours check
             
             # Analyze all symbols
             results = []
@@ -364,7 +393,7 @@ def dashboard():
         <div class="container">
             <h1>🤖 Market Spike Bot Dashboard</h1>
             <div class="status running">
-                <strong>✅ Bot Status:</strong> Running
+                <strong>✅ Bot Status:</strong> Running 24/7
             </div>
             {warning_div}
             <div class="info">
@@ -374,7 +403,7 @@ def dashboard():
                 <strong>⏱️ Scan Interval:</strong> 15 minutes
             </div>
             <div class="info">
-                <strong>🕐 Market Hours:</strong> 9:15 AM - 3:30 PM IST
+                <strong>🕐 Operation:</strong> 24/7 Continuous Scanning
             </div>
             <div class="info">
                 <strong>📈 Technical Analysis:</strong> SMA(20), RSI(14), MACD
@@ -406,7 +435,8 @@ def status():
                 "scan_interval_minutes": SCAN_INTERVAL // 60,
                 "data_period": "7d",
                 "data_interval": "30m",
-                "telegram_enabled": bot_status["telegram_enabled"]
+                "telegram_enabled": bot_status["telegram_enabled"],
+                "operation_mode": "24/7"
             }
         })
     except Exception as e:
@@ -430,7 +460,8 @@ def health():
             "timestamp": current_time.isoformat(),
             "bot_running": bot_status["running"],
             "uptime_scans": bot_status["total_scans"],
-            "telegram_enabled": bot_status["telegram_enabled"]
+            "telegram_enabled": bot_status["telegram_enabled"],
+            "operation_mode": "24/7"
         })
     except Exception as e:
         logger.error(f"Health check error: {e}")
@@ -446,6 +477,7 @@ if __name__ == "__main__":
     logger.info(f"Telegram enabled: {bot_status['telegram_enabled']}")
     logger.info(f"Monitoring symbols: {', '.join(SYMBOLS)}")
     logger.info(f"Scan interval: {SCAN_INTERVAL // 60} minutes")
+    logger.info("Operation mode: 24/7 continuous scanning")
     
     # Start the market scanner in a background thread
     scanner_thread = threading.Thread(target=run_market_scanner, daemon=True)
