@@ -22,8 +22,11 @@ app = Flask(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHAT_ID = os.getenv("CHAT_ID", "")
 TELEGRAM_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage" if BOT_TOKEN else ""
-# Stocks to monitor
-SYMBOLS = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS"]
+# Stocks to monitor - Top 10 Indian stocks
+SYMBOLS = [
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
+    "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "LT.NS"
+]
 # Market configuration
 IST = pytz.timezone('Asia/Kolkata')
 MARKET_OPEN = dt_time(9, 15)  # 9:15 AM IST
@@ -207,11 +210,11 @@ def analyze_symbol(symbol):
         
         # Format values safely for logging
         price_str = f"₹{price:.2f}" if price is not None else "N/A"
+        sma_str = f"₹{sma20:.2f}" if sma20 is not None else "N/A"
         rsi_str = f"{rsi14:.1f}" if rsi14 is not None else "N/A"
         macd_str = f"{macd_val:.3f}" if macd_val is not None else "N/A"
         volume_str = f"{volume:.0f}" if volume is not None else "N/A"
-        sma_str = f"₹{sma20:.2f}" if sma20 is not None else "N/A"
-
+        
         logger.info(f"[{symbol}] Price={price_str}, SMA20={sma_str}, RSI={rsi_str}, MACD={macd_str}, Volume={volume_str}")
         
         # Generate signals if we have all required data
@@ -311,7 +314,12 @@ def run_market_scanner():
             
             logger.info(f"Starting scan #{scan_count} at {current_time.strftime('%H:%M:%S')}")
             
-            # Bot now runs 24/7 - removed market hours check
+            # Check if market is open
+            if not is_market_open():
+                logger.info("Market is closed, waiting for next scan")
+                bot_status["last_scan"] = current_time.isoformat()
+                time.sleep(SCAN_INTERVAL)
+                continue
             
             # Analyze all symbols
             results = []
@@ -394,17 +402,17 @@ def dashboard():
         <div class="container">
             <h1>🤖 Market Spike Bot Dashboard</h1>
             <div class="status running">
-                <strong>✅ Bot Status:</strong> Running 24/7
+                <strong>✅ Bot Status:</strong> Running
             </div>
             {warning_div}
             <div class="info">
-                <strong>📊 Monitoring:</strong> 5 Indian stocks (RELIANCE, TCS, HDFCBANK, INFY, ICICIBANK)
+                <strong>📊 Monitoring:</strong> 10 Indian stocks (RELIANCE, TCS, HDFCBANK, INFY, ICICIBANK, HINDUNILVR, ITC, SBIN, BHARTIARTL, LT)
             </div>
             <div class="info">
                 <strong>⏱️ Scan Interval:</strong> 15 minutes
             </div>
             <div class="info">
-                <strong>🕐 Operation:</strong> 24/7 Continuous Scanning
+                <strong>🕐 Market Hours:</strong> 9:15 AM - 3:30 PM IST
             </div>
             <div class="info">
                 <strong>📈 Technical Analysis:</strong> SMA(20), RSI(14), MACD
@@ -437,7 +445,7 @@ def status():
                 "data_period": "7d",
                 "data_interval": "30m",
                 "telegram_enabled": bot_status["telegram_enabled"],
-                "operation_mode": "24/7"
+                "operation_mode": "market_hours_only"
             }
         })
     except Exception as e:
@@ -462,7 +470,7 @@ def health():
             "bot_running": bot_status["running"],
             "uptime_scans": bot_status["total_scans"],
             "telegram_enabled": bot_status["telegram_enabled"],
-            "operation_mode": "24/7"
+            "operation_mode": "market_hours_only"
         })
     except Exception as e:
         logger.error(f"Health check error: {e}")
@@ -478,7 +486,7 @@ if __name__ == "__main__":
     logger.info(f"Telegram enabled: {bot_status['telegram_enabled']}")
     logger.info(f"Monitoring symbols: {', '.join(SYMBOLS)}")
     logger.info(f"Scan interval: {SCAN_INTERVAL // 60} minutes")
-    logger.info("Operation mode: 24/7 continuous scanning")
+    logger.info("Operation mode: Market hours only (9:15 AM - 3:30 PM IST)")
     
     # Start the market scanner in a background thread
     scanner_thread = threading.Thread(target=run_market_scanner, daemon=True)
